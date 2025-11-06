@@ -2,7 +2,7 @@
 Rodrigo Senovilla-Ganzo, Christina Bekiari,  Eneritz Rueda-Alaña,  Tetsuya Yamada,  Bastienne Zaremba,  Ana María Aransay,  Laura Escobar,  Mats Nilsson,  Marco Grillo,  Henrik Kaessmann,  Fernando García-Moreno
 
 Functions employed for analyisis are stored in conf.R
-Code employed for Paroedura picta annotation in GeMoMa.
+Code employed for Paroedura picta annotation in GeMoMa.sh
 
 
 Data is stored in EGA (waiting for ID confirmation).
