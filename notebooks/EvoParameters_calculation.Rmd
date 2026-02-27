@@ -1,0 +1,773 @@
+
+
+```{r}
+library(Seurat)
+library(tidyverse)
+library(ggplot2)
+library(parallel)
+library(dplyr)
+```
+
+
+
+########## function for caulculate the average score for each barcode #####
+## data is the data slot from Seruat
+## df is the dataframe that contains the value/score, such as the tau value
+## meta is the meta data from Seruat object
+## to_calculate is the column name in the df object that will be used
+## geneID_column is the gene id column name
+## ct_group is the cell type classification column from the Seurat meta data
+
+# --- Functions ---
+
+```{r}
+###################################### Pleiotropy #############################################################
+
+calculate_mean_weightAve <- function(data, df, meta, ncores=6, ct_group="general.cellTypes",
+                                     
+                                     geneID_column="gene_id", to_calculate="TissueTau",
+                                     
+                                     ct_to_keep=NULL, diffG = NULL, markG_geneID_column = "gene_id") {
+  
+  
+  
+  ### remove the NA records of the column of interests
+  
+  df <- df[!is.na(df[, to_calculate]), c(geneID_column, to_calculate)]
+  
+  rownames(df) <- df[ ,geneID_column]
+  
+  
+  
+  
+  
+  ### if a specific list of genes is provided
+  
+  ### the format of genes_to_look should be compatible with the geneID_column
+  
+  print(nrow(df))
+  
+  data_keep <- data[intersect(rownames(data), df[ ,geneID_column]), ]
+  
+  
+  
+  print(nrow(data_keep))
+  
+  
+  
+  #ct_to_run <- NULL
+  
+  
+  
+  if(is.null(ct_to_keep)){
+    
+    ct_to_run <- unique(meta[ , ct_group])
+    
+  } else {
+    
+    ct_to_run <- intersect(ct_to_keep, unique(meta[ , ct_group]))
+    
+  }
+  
+  
+  
+  print(ct_to_run)
+  
+  
+  
+  
+  
+  value_by_ct <- mclapply(ct_to_run, function(ct){
+    
+    
+    
+    #ct <- "HSC"
+    
+    ct_bc <- rownames(meta[meta[ , ct_group] == ct,])
+    
+    ct_matrix <- data_keep[, ct_bc]
+    
+    
+    
+    if(!is.null(diffG)){
+      
+      markGenes <- diffG[diffG$cluster == ct, markG_geneID_column]
+      
+      markGenes <- intersect(markGenes, df[ ,geneID_column])
+      
+    }
+    
+    
+    
+    
+    
+    #### simple mean value across all genes expressed
+    
+    mean_per_bc <- mclapply(colnames(ct_matrix), function(bc){
+      
+      #bc <- colnames(ct_matrix)[1]
+      
+      tokeep <- ct_matrix[, bc]
+      
+      tokeep <- tokeep[tokeep !=0]
+      
+      
+      
+      if(is.numeric(express_threshold)){
+        
+        tokeep <- tokeep[tokeep > express_threshold]
+        
+      } else { ## else filter by the first quantile
+        
+        ## only keep the genes that have expression above the first quantile
+        
+        
+        
+        quant_1st <- summary(tokeep)[2]
+        
+        tokeep <- tokeep[tokeep > quant_1st]
+        
+      }
+      
+      
+      
+      
+      
+      if(is.null(diffG)){
+        
+        genes <- names(tokeep)
+        
+      } else {
+        
+        genes <- intersect(markGenes, names(tokeep))
+        
+      }
+      
+      #genes <- names(tokeep)
+      
+      value_genes <- df[genes, to_calculate]
+      
+      return(mean(value_genes))
+      
+    }, mc.cores = getOption("mc.cores", ncores))
+    
+    
+    
+    
+    
+    ### average weighted by log-transformed expression
+    
+    weight_ave_per_bc <- mclapply(colnames(ct_matrix), function(bc){
+      
+      #bc <- colnames(ct_matrix)[1]
+      
+      
+      
+      if(is.null(diffG)){
+        
+        gene_exp <- ct_matrix[, bc]
+        
+      } else {
+        
+        gene_exp <- ct_matrix[, bc][markGenes]
+        
+        
+        
+      }
+      
+      
+      
+      gene_exp <- gene_exp[gene_exp !=0]
+      
+      
+      
+  
+      gene_exp_value <- sapply(names(gene_exp), function(n) {
+        
+        return(df[n, to_calculate]*gene_exp[n])
+        
+      })
+      
+      gene_exp_value <- unlist(gene_exp_value)
+      
+      gene_exp_value_ave <- sum(gene_exp_value)/sum(gene_exp) ### average branch weighted by the gene expression (log transformed)
+      
+      return(gene_exp_value_ave)
+      
+    }, mc.cores = getOption("mc.cores", ncores))
+    
+  
+    
+    ### average weighted by non log-transformed expression
+    
+    weight_ave_per_bc_nolog <- mclapply(colnames(ct_matrix), function(bc){
+      
+      #bc <- colnames(ct_matrix)[1]
+      
+      
+      
+      if(is.null(diffG)){
+        
+        gene_exp <- ct_matrix[, bc]
+        
+      } else {
+        
+        gene_exp <- ct_matrix[, bc][markGenes]
+        
+        
+        
+      }
+      
+      
+      
+      gene_exp <- gene_exp[gene_exp !=0]
+      
+      
+      
+      gene_exp_nolog <- lapply(gene_exp, function(x){
+        
+        return(expm1(x))
+        
+      })
+      
+      
+      
+      gene_exp_value <- lapply(names(gene_exp_nolog), function(n) {
+        
+        
+        
+        return(df[n, to_calculate]*gene_exp_nolog[[n]])
+        
+      })
+      
+      gene_exp_value <- unlist(gene_exp_value)
+      
+      gene_exp_value_ave <- sum(gene_exp_value)/sum(unlist(gene_exp_nolog)) ### average branch weighted by the gene expression (log transformed)
+      
+      return(gene_exp_value_ave)
+      
+    }, mc.cores = getOption("mc.cores", ncores))
+    
+    
+    
+    df.branch <- data.frame("mean"=unlist(mean_per_bc),
+                            
+                            "weightAve"=unlist(weight_ave_per_bc),
+                            
+                            "weightAveNoLog"=unlist(weight_ave_per_bc_nolog),
+                            
+                            "celltype"=ct)
+    
+    
+    
+    return(df.branch)
+    
+    
+    
+    
+    
+  }, mc.cores = getOption("mc.cores", ncores))
+  
+  
+  
+  df.value_by_ct <- Reduce(rbind, value_by_ct)
+  
+  
+  
+  return(df.value_by_ct)
+  
+  
+  
+}
+```
+
+
+################################################ Lethality @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+```{r}
+
+calculate_mean_weightAve_lethal <- function(data, df, meta, ncores=6, ct_group="general.cellTypes",
+                                            
+                                            geneID_column="gene_id", to_calculate="bin",
+                                            
+                                            ct_to_keep=NULL, diffG = NULL, markG_geneID_column = "gene_id") {
+  
+  
+  
+  ### remove the NA records of the column of interests
+  
+  df <- df[!is.na(df[, to_calculate]), c(geneID_column, to_calculate)]
+  
+  rownames(df) <- df[ ,geneID_column]
+  
+  
+  
+  
+  
+  ### if a specific list of genes is provided
+  
+  ### the format of genes_to_look should be compatible with the geneID_column
+  
+  print(nrow(df))
+  
+  data_keep <- data[intersect(rownames(data), df[ ,geneID_column]), ]
+  
+  
+  
+  print(nrow(data_keep))
+  
+  
+  
+  #ct_to_run <- NULL
+  
+  
+  
+  if(is.null(ct_to_keep)){
+    
+    ct_to_run <- unique(meta[ , ct_group])
+    
+  } else {
+    
+    ct_to_run <- intersect(ct_to_keep, unique(meta[ , ct_group]))
+    
+  }
+  
+  
+  
+  print(ct_to_run)
+  
+  
+  
+  
+  
+  value_by_ct <- mclapply(ct_to_run, function(ct){
+    
+    
+    
+    #ct <- "HSC"
+    
+    ct_bc <- rownames(meta[meta[ , ct_group] == ct,])
+    
+    ct_matrix <- data_keep[, ct_bc]
+    
+    
+    
+    if(!is.null(diffG)){
+      
+      markGenes <- diffG[diffG$cluster == ct, markG_geneID_column]
+      
+      markGenes <- intersect(markGenes, df[ ,geneID_column])
+      
+    }
+    
+    
+    
+    
+    
+    #### simple mean value across all genes expressed
+    
+    mean_per_bc <- mclapply(colnames(ct_matrix), function(bc){
+      
+      #bc <- colnames(ct_matrix)[1]
+      
+      tokeep <- ct_matrix[, bc]
+      
+      tokeep <- tokeep[tokeep !=0]
+      
+      
+      
+      if(is.numeric(express_threshold)){
+        
+        tokeep <- tokeep[tokeep > express_threshold]
+        
+      } else { ## else filter by the first quantile
+        
+        ## only keep the genes that have expression above the first quantile
+        
+        
+        
+        quant_1st <- summary(tokeep)[2]
+        
+        tokeep <- tokeep[tokeep > quant_1st]
+        
+      }
+      
+      
+      
+      
+      
+      if(is.null(diffG)){
+        
+        genes <- names(tokeep)
+        
+      } else {
+        
+        genes <- intersect(markGenes, names(tokeep))
+        
+      }
+      
+      #genes <- names(tokeep)
+      
+      value_genes <- df[genes, to_calculate]
+      
+      mean <- sum(as.data.frame(table(value_genes)/length(value_genes))[1:2,"Freq"])
+      
+      
+      return(mean)
+      
+    }, mc.cores = getOption("mc.cores", ncores))
+    
+    
+    
+    df.branch <- data.frame("mean"=unlist(mean_per_bc),
+                            
+                            "celltype"=ct)
+    
+    
+    
+    return(df.branch)
+    
+    
+    
+    
+    
+  }, mc.cores = getOption("mc.cores", 5))
+  
+  
+  
+  df.value_by_ct <- Reduce(rbind, value_by_ct)
+  
+  
+  
+  return(df.value_by_ct)
+  
+  
+  
+}
+```
+
+
+
+###################################### phastCons #############################################################
+
+```{r}
+calculate_mean_weightAve_phastCons <- function(data, df, meta, ncores=6, ct_group="general.cellTypes",
+                                     
+                                     geneID_column="name", to_calculate="mean",
+                                     
+                                     ct_to_keep=NULL, diffG = NULL, markG_geneID_column = "name") {
+  
+  
+  
+  ### remove the NA records of the column of interests
+  
+  df <- df[!is.na(df[, to_calculate]), c(geneID_column, to_calculate)]
+  
+  rownames(df) <- df[ ,geneID_column]
+  
+  
+  
+  
+  
+  ### if a specific list of genes is provided
+  
+  ### the format of genes_to_look should be compatible with the geneID_column
+  
+  print(nrow(df))
+  
+  data_keep <- data[intersect(rownames(data), df[ ,geneID_column]), ]
+  
+  
+  
+  print(nrow(data_keep))
+  
+  
+  
+  #ct_to_run <- NULL
+  
+  
+  
+  if(is.null(ct_to_keep)){
+    
+    ct_to_run <- unique(meta[ , ct_group])
+    
+  } else {
+    
+    ct_to_run <- intersect(ct_to_keep, unique(meta[ , ct_group]))
+    
+  }
+  
+  
+  
+  print(ct_to_run)
+  
+  
+  
+  
+  
+  value_by_ct <- mclapply(ct_to_run, function(ct){
+    
+    
+    
+    #ct <- "HSC"
+    
+    ct_bc <- rownames(meta[meta[ , ct_group] == ct,])
+    
+    ct_matrix <- data_keep[, ct_bc]
+    
+    
+    
+    if(!is.null(diffG)){
+      
+      markGenes <- diffG[diffG$cluster == ct, markG_geneID_column]
+      
+      markGenes <- intersect(markGenes, df[ ,geneID_column])
+      
+    }
+    
+    
+    
+    
+    
+    #### simple mean value across all genes expressed
+    
+    mean_per_bc <- mclapply(colnames(ct_matrix), function(bc){
+      
+      #bc <- colnames(ct_matrix)[1]
+      
+      tokeep <- ct_matrix[, bc]
+      
+      tokeep <- tokeep[tokeep !=0]
+      
+      
+      
+      if(is.numeric(express_threshold)){
+        
+        tokeep <- tokeep[tokeep > express_threshold]
+        
+      } else { ## else filter by the first quantile
+        
+        ## only keep the genes that have expression above the first quantile
+        
+        
+        
+        quant_1st <- summary(tokeep)[2]
+        
+        tokeep <- tokeep[tokeep > quant_1st]
+        
+      }
+      
+      
+      
+      
+      
+      if(is.null(diffG)){
+        
+        genes <- names(tokeep)
+        
+      } else {
+        
+        genes <- intersect(markGenes, names(tokeep))
+        
+      }
+      
+      #genes <- names(tokeep)
+      
+      value_genes <- df[genes, to_calculate]
+      
+      return(mean(value_genes))
+      
+    }, mc.cores = getOption("mc.cores", ncores))
+    
+    
+    
+    
+    
+    ### average weighted by log-transformed expression
+    
+    weight_ave_per_bc <- mclapply(colnames(ct_matrix), function(bc){
+      
+      #bc <- colnames(ct_matrix)[1]
+      
+      
+      
+      if(is.null(diffG)){
+        
+        gene_exp <- ct_matrix[, bc]
+        
+      } else {
+        
+        gene_exp <- ct_matrix[, bc][markGenes]
+        
+        
+        
+      }
+      
+      
+      
+      gene_exp <- gene_exp[gene_exp !=0]
+      
+      
+      
+      
+      gene_exp_value <- sapply(names(gene_exp), function(n) {
+        
+        return(df[n, to_calculate]*gene_exp[n])
+        
+      })
+      
+      gene_exp_value <- unlist(gene_exp_value)
+      
+      gene_exp_value_ave <- sum(gene_exp_value)/sum(gene_exp) ### average branch weighted by the gene expression (log transformed)
+      
+      return(gene_exp_value_ave)
+      
+    }, mc.cores = getOption("mc.cores", ncores))
+    
+    
+    
+    ### average weighted by non log-transformed expression
+    
+    weight_ave_per_bc_nolog <- mclapply(colnames(ct_matrix), function(bc){
+      
+      #bc <- colnames(ct_matrix)[1]
+      
+      
+      
+      if(is.null(diffG)){
+        
+        gene_exp <- ct_matrix[, bc]
+        
+      } else {
+        
+        gene_exp <- ct_matrix[, bc][markGenes]
+        
+        
+        
+      }
+      
+      
+      
+      gene_exp <- gene_exp[gene_exp !=0]
+      
+      
+      
+      gene_exp_nolog <- lapply(gene_exp, function(x){
+        
+        return(expm1(x))
+        
+      })
+      
+      
+      
+      gene_exp_value <- lapply(names(gene_exp_nolog), function(n) {
+        
+        
+        
+        return(df[n, to_calculate]*gene_exp_nolog[[n]])
+        
+      })
+      
+      gene_exp_value <- unlist(gene_exp_value)
+      
+      gene_exp_value_ave <- sum(gene_exp_value)/sum(unlist(gene_exp_nolog)) ### average branch weighted by the gene expression (log transformed)
+      
+      return(gene_exp_value_ave)
+      
+    }, mc.cores = getOption("mc.cores", ncores))
+    
+    
+    
+    df.branch <- data.frame("mean"=unlist(mean_per_bc),
+                            
+                            "weightAve"=unlist(weight_ave_per_bc),
+                            
+                            "weightAveNoLog"=unlist(weight_ave_per_bc_nolog),
+                            
+                            "celltype"=ct)
+    
+    
+    
+    return(df.branch)
+    
+    
+    
+    
+    
+  }, mc.cores = getOption("mc.cores", ncores))
+  
+  
+  
+  df.value_by_ct <- Reduce(rbind, value_by_ct)
+  
+  
+  
+  return(df.value_by_ct)
+  
+  
+  
+}
+```
+
+# --- Load objects and datasets
+
+```{r}
+pleio_mouse<-read.csv2("~/bioinfo/sc_phylobrain/pleiotropy/pleiotropy_mmusculus.csv")
+lethal_mouse<-read.csv2("~/bioinfo/sc_phylobrain/pleiotropy/IMPC_Lethality_Mouse.csv", sep = ",")
+```
+
+
+# ---- Calculations on cells
+
+```{r}
+### ensure no duplicated genes
+lethal_mouse <- lethal_mouse[!duplicated(lethal_mouse$ortholog.mouse_gene.symbol), ]
+### meta and data needed for evolutionary force analysis
+meta <- sp1@meta.data
+data <- GetAssayData(sp1, slot = "data", assay = "RNA")
+
+lethal_mouse$gene_id <- lethal_mouse$ortholog.mouse_gene.symbol %>% stringr::str_to_upper()
+express_threshold = 1
+lethal_mouse <- lethal_mouse %>% distinct(gene_id, .keep_all = T)
+
+lethal_all_sp1 <- calculate_mean_weightAve_lethal(data = data, meta = meta, df = lethal_mouse, to_calculate="bin", ct_group = "seurat_clusters", geneID_column = "gene_id", ncores = 3)
+```
+
+```{r}
+lethal_all_me9$celltype<-stringr::str_to_title(lethal_all_me9$celltype)
+lethal_all_me9$celltype<-stringr::str_to_title(lethal_all_me9$celltype)
+lethal_all_me9$celltype<-stringr::str_replace(lethal_all_me9$celltype,"Organiser","Organisers")
+lethal_all_me9$celltype<-stringr::str_replace(lethal_all_me9$celltype,"Stemcell","Progenitors")
+lethal_all_me9$celltype<-factor(lethal_all_me9$celltype, levels = c("Organisers","Progenitors","Neurons"))
+pmouse_lethal<-ggplot(lethal_all_me9, aes(x = celltype, y = mean, fill= celltype)) +
+geom_boxplot()+scale_fill_manual(values = rev(c("grey50","green4","steelblue3")))+ggtitle("Mouse")+theme_bw()+xlab("")+ylab("Mean Gene lethal per Cell")+geom_hline(yintercept=0.34, linetype="dashed")
+pmouse_lethal
+```
+
+```{r}
+model <- aov(mean ~ celltype, data = lethal_all_sp1)
+summary(model)
+tukey_result <- TukeyHSD(model)
+print(tukey_result$celltype)
+```
+
+```{r}
+lethal_all_sp1<-read.csv("lethal_all_sp1_3celltypes.csv")
+write.csv(lethal_all_sp1, "lethal_all_sp1_3celltypes.csv")
+```
+
+# Calculation on Gene Sets
+
+```{r}
+#Load phylotypic genes or other ontology gene set
+phylotypic<-read.table("~/bioinfo/sc_phylobrain/phylotypic_genes.txt")$V1
+#merge with pleiotropy dataset
+phylo_mouse<-mouse_genes[mouse_genes$external_gene_name %in% phylotypic,]
+phylo_pleio<-merge(pleio_mouse, by.x="Mouse_ID", phylo_mouse, by.y = "ensembl_gene_id") %>% mutate(class = "Phylotypic")
+```
+
+```{r}
+#plot
+ggplot(pleio, aes(x = class, y = Pleiotropy, fill= class)) +
+geom_boxplot()+theme_bw()
+```

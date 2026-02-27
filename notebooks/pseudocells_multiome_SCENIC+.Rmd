@@ -1,0 +1,556 @@
+---
+title: "pseudocells_multiome_SCENIC+.Rmd"
+author: "phylobrain"
+date: "2026-02-27"
+output: html_document
+---
+
+# Setup
+
+```{r, knitr::opts_chunk$set(echo = TRUE)}
+# Load packages
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(Signac)
+library(dplyr)
+library(tidyr)
+library(SeuratObject)
+```
+
+
+```{r}
+# Load colors 
+# ---- Set once (top of the Rmd / script) ----
+base_dir <- "/home/phylobrain/bioinfo/sc_phylobrain"   # user edits this once
+ce3_dir  <- file.path(base_dir, "ce3_ATAC")
+
+# ---- Load objects ----
+rna_sp1     <- readRDS(file.path(ce3_dir, "bgalgal1_rna_080825.rds"))
+atac_sp1    <- readRDS(file.path(ce3_dir, "bgalgal1_atac_080825.rds"))
+coembed_sp1 <- readRDS(file.path(ce3_dir, "coembed_bgalgal1_080825.rds"))
+
+# ---- Standardize cell-type strings (avoid "/" in downstream file/plot labels) ----
+atac_sp1@meta.data$cell_type <- stringr::str_replace(atac_sp1@meta.data$cell_types, "/","-")
+rna_sp1@meta.data$cell_type <- stringr::str_replace(rna_sp1@meta.data$cell_types, "/","-")
+```
+
+
+#Calculate Pseudocels
+
+```{r}
+pseudocells<-function(rna_sp1, atac_sp1, coembed_sp1){
+
+  
+# Get all the barcodes that are present in the joint embeddings
+sp1_barcodes <- coembed_sp1@meta.data %>% 
+  tibble::rownames_to_column(var = "barcode") %>% 
+  mutate(kind = ifelse(str_detect(barcode, "^ce3"), "ATAC", "RNA"))  %>%
+  dplyr::select(barcode, kind)
+
+# Get ATAC-seq information
+atac_info_sp1 <- atac_sp1@meta.data %>% 
+  tibble::rownames_to_column(var = "cell") 
+stopifnot(all(atac_info_sp1$cell %in% sp1_barcodes$barcode))
+atac_info_sp1$cell_type<-stringr::str_replace(atac_info_sp1$cell_types, "/","-")
+
+# Get RNA-seq information
+rna_info_sp1 <- rna_sp1@meta.data %>% 
+  tibble::rownames_to_column(var = "cell") 
+stopifnot(all(rna_info_sp1$cell %in% sp1_barcodes$barcode))
+rna_info_sp1$cell_type<- stringr::str_replace(rna_info_sp1$cell_types, "/","-")
+
+
+## remove all cells that are not annotated
+rna_info_sp1 <- rna_info_sp1 %>% dplyr::filter(!is.na(cell_type))
+
+
+
+#Collapse all 
+df_barcodes <- 
+  rbind(atac_info_sp1 %>% dplyr::select(cell,  cell_type) %>%
+          dplyr::mutate(modality="ATAC", species="sp1"),
+        rna_info_sp1 %>% dplyr::select(cell, cell_type) %>%
+          dplyr::mutate(modality="RNA", species="sp1")
+  ) %>%
+  dplyr::mutate(new_name = paste0(species, "_", modality))
+
+
+# Load configs
+#config <- configr::read.config("/home/tetsuya/project/cerebellum/script/scenicplus_workflow/Configs/tests/build_grn_230414.TOML", file.type="toml")
+species <- unique(df_barcodes$species)
+nn <- 10 # 1 barcode contains two modalities (RNA & ATAC)
+per_modality <- round(nn/2)
+max_overlap <- as.numeric(0.8) #ask tetsuya
+min_nn <- as.numeric(4)
+group_var_check = "cell_type" #preguntar tetsuya
+subsample_fraction = as.numeric(1) #preguntar tetsuya
+pca_dim <- as.numeric(50)
+#cell_types_to_include <- config$pseudocells$cell_types_to_include #preguntar tetsuya
+
+
+save_path = paste0("~/bioinfo/sc_phylobrain/ce3_ATAC")
+save_path_img = paste0(save_path, "/qc")
+dir.create(save_path, recursive=TRUE)
+dir.create(save_path_img, recursive=TRUE)
+
+all_barcodes <- df_barcodes %>% 
+  dplyr::filter(species == species) #%>%
+#dplyr::filter(cell_type %in% cell_types_to_include)
+
+dicts <- c("cell_type") %>%
+  purrr::set_names() %>%
+  purrr::map(function(col) {
+    all_barcodes %>%
+      dplyr::pull(col, cell)
+  })
+
+#Upload coembedding 
+
+
+# stage="P4"
+# stage="CS20"
+embedding <- coembed_sp1 #this is stored locally before
+
+# remove cells which are not found in the info df
+embedding <- embedding[,colnames(embedding) %in% all_barcodes$cell]
+
+# quality check via UMAP
+set.seed(1)
+
+umap_coord <- as.data.frame(embedding@reductions$umap@cell.embeddings)
+umap_coord$tech<-ifelse(str_detect(colnames(embedding), "^ce3"), "ATAC", "RNA")
+umap_coord[all_barcodes$cell,"cell_type"]<-all_barcodes$cell_type
+p1 <- ggplot() +
+  geom_point(aes(x=umap_coord[, 1], y=umap_coord[, 2], 
+                 color=umap_coord$tech), 
+             size=0.1, alpha=0.5) +
+  labs(x="UMAP 1", y="UMAP 2")
+p2 <- ggplot() +
+  geom_point(aes(x=umap_coord[, 1], y=umap_coord[, 2], 
+                 color=umap_coord$cell_type), 
+             size=0.1, alpha=0.5) +
+  labs(color="Cell Type", x="UMAP 1", y="UMAP 2") +
+  guides(colour = guide_legend(override.aes = list(size=1.5, alpha=1))) 
+p <- cowplot::plot_grid(p1, p2, rel_widths = c(1, 1.4))
+print(p)
+ggsave(paste0(save_path_img, "/01_", "_coembed.png"), 
+       height=8, width=20)
+
+# compute KNN
+embedding <- coembed_sp1@reductions$umap
+nn_obj <- RANN::nn2(embedding@cell.embeddings[, 1:2], k = min(4*nn, nrow(embedding@cell.embeddings)), eps = 0)
+#embedding@cell.embeddings<-embedding@cell.embeddings[rownames(embedding)[sample(nrow(embedding), nrow(embedding))],]
+set.seed(1)
+smp <- sample(nrow(nn_obj$nn.idx), round(nrow(nn_obj$nn.idx)/2), replace = FALSE)
+#smp <- 1:nrow(nn_obj$nn.idx)
+
+# Get the nearest neighbors from each modality
+df <- purrr::map_dfr(smp, function(idx) {
+  self_barcode <- rownames(embedding)[idx]
+  self_modality <- ifelse(str_detect(self_barcode, "^ce3"), "ATAC", "RNA")
+  others_barcode <- rownames(embedding)[nn_obj$nn.idx[idx, ]]
+  others_modality <- ifelse(str_detect(others_barcode, "^ce3"), "ATAC", "RNA")
+  sum_per_modality <- purrr::set_names(c("RNA", "ATAC")) %>% purrr::map_dbl(~sum(others_modality==.x))
+  if (min(sum_per_modality) < min_nn) {return(NULL)}
+  rna_barcodes <- others_barcode[others_modality=="RNA"][1:min(per_modality, sum_per_modality["RNA"])]
+  atac_barcodes <- others_barcode[others_modality=="ATAC"][1:min(per_modality, sum_per_modality["ATAC"])]
+  others_barcode <- c(rna_barcodes, atac_barcodes)
+  rna_distance <- nn_obj$nn.dists[idx, ][others_modality=="RNA"][1:min(per_modality, sum_per_modality["RNA"])]
+  atac_distance <- nn_obj$nn.dists[idx, ][others_modality=="ATAC"][1:min(per_modality, sum_per_modality["ATAC"])]
+  tibble::tibble(
+    i = idx,
+    self_barcode = self_barcode,
+    self_modality = self_modality,
+    self_cell_type = dicts$cell_type[self_barcode],
+    others_barcode = others_barcode,
+    others_modality = ifelse(str_detect(others_barcode, "^ce3"), "ATAC", "RNA"),
+    others_cell_type = dicts$cell_type[others_barcode],
+    distance = c(rna_distance, atac_distance)
+  )
+})
+
+df$self_modality %>% table()
+table(df$i)
+# filter for same annotation
+if (group_var_check == "cell_type") {
+  df_filter_1 <- df }
+
+
+# filter for min number of cells for both modalities  #ISSUES
+min_nn_check <- df_filter_1 %>%
+  dplyr::group_by(i) %>%
+  dplyr::count(others_modality) %>%
+  pivot_wider(names_from = others_modality, values_from = n) %>%
+  dplyr::filter((ATAC >= {{min_nn}}) & (RNA >= {{min_nn}})) %>%
+  pull(i)
+
+# if self_modality is RNA most other cells are also RNA
+df_filter_1 %>%
+  dplyr::group_by(i) %>%
+  dplyr::summarise(self_modality = dplyr::first(self_modality), 
+                   ATAC = sum(others_modality=="ATAC") / n(), 
+                   RNA = sum(others_modality=="RNA") / n()) %>%
+  ggplot() +
+  geom_histogram(aes(x=RNA, fill=self_modality), position="dodge", alpha=0.4, color="black", bins=40) +
+  labs(title= "Fraction of NN that are RNA cells stratified by Self Modality",
+       x="Fration", y="Count", fill="Self Modality") -> p
+print(p)
+ggsave(paste0(save_path_img, "/02A_", "_frac_nn_per_modal.png"), 
+       height=8, width=20)
+
+df_filter_2 <- df_filter_1 %>%
+  dplyr::filter(i %in% {{min_nn_check}})
+
+# if self_modality is RNA most other cells are also RNA
+df_filter_2 %>%
+  dplyr::group_by(i) %>%
+  dplyr::summarise(self_modality = dplyr::first(self_modality), 
+                   ATAC = sum(others_modality=="ATAC") / n(), 
+                   RNA = sum(others_modality=="RNA") / n()) %>%
+  ggplot() +
+  geom_histogram(aes(x=RNA, fill=self_modality), position="stack", alpha=0.4, color="black", bins=40) +
+  labs(title=paste0(" | Fraction of NN that are RNA cells stratified by Self Modality"), 
+       x="Fration", y="Count", fill="Self Modality") -> p
+print(p)
+ggsave(paste0(save_path_img, "/02B_", "_frac_nn_per_modal_after_filter.png"), 
+       height=8, width=20)
+
+# check to what extend we retain the cell type heterogeneity #probably does not need
+rbind(
+  df_filter_2 %>%
+    dplyr::select(i, self_cell_type) %>%
+    dplyr::distinct() %>%
+    dplyr::count(self_cell_type) %>%
+    dplyr::mutate(frac = n / sum(n)) %>%
+    dplyr::rename(c("cell_type" = "self_cell_type")) %>%
+    dplyr::mutate(orig = "pseudo_cells"),
+  all_barcodes %>%
+    dplyr::count(cell_type) %>%
+    dplyr::mutate(frac = n / sum(n)) %>%
+    dplyr::mutate(orig="single_cells")
+) %>%
+  ggplot() +
+  geom_bar(aes(y=cell_type, x=frac, fill=orig), stat="identity", position="dodge", alpha=0.4, color="black",
+           width=0.6) +
+  labs(x="Fraction", y="Group", fill="Based on", title=paste0("Fraction of cells/pseudocells from each group")) -> p
+print(p)
+ggsave(paste0(save_path_img, "/03A_", "frac_sc_pseudo_before_overlap.png"), 
+       height=8, width=20)
+
+# check for overlaps
+agg_list = list()
+
+library(data.table)   # fast grouping
+library(fastmatch)    # hashed %fin% / fmatch
+
+## one-time preparation ----------------------------------------------------
+setDT(df_filter_2)        # convert in-place
+candidates <- df_filter_2[ , .(
+  barcodes  = list(others_barcode),      # keep raw vectors
+  modality  = list(others_modality),
+  cell_type = list(others_cell_type)
+), by = i][order(i)]                     # keep a stable order if you need it
+
+## main loop ---------------------------------------------------------------
+for (r in seq_len(nrow(candidates))) {
+  
+  bc  <- candidates$barcodes[[r]]   # candidate barcode vector
+  len <- length(bc)
+  
+  ## any() short-circuits as soon as a TRUE is seen — cheap exit ------------
+  too_similar <- any(vapply(
+    agg_list,
+    function(a) {
+      ## count how many candidate barcodes are already inside a$barcodes
+      shared <- sum(fmatch(bc, a$barcodes, nomatch = 0L) > 0L)
+      shared / len > max_overlap
+    },
+    logical(1L)
+  ))
+  
+  if (too_similar) next     # reject this candidate and move on
+  
+  ## otherwise accept it ----------------------------------------------------
+  agg_list[[paste0("agg_", candidates$i[r])]] <- list(
+    barcodes  = bc,
+    modality  = candidates$modality[[r]],
+    cell_type = candidates$cell_type[[r]]
+  )
+}
+
+
+
+if (subsample_fraction < 1) {
+  set.seed(1)
+  n_sample <- round(length(agg_list)*subsample_fraction)
+  print(paste0("Sampling ", n_sample, " Pseudocells"))
+  agg_list <- sample(x=agg_list, size=n_sample, replace=F, prob=NULL)
+}
+
+df_filter_2 %>%
+  dplyr::select(i) %>%
+  dplyr::distinct() %>%
+  dplyr::mutate(seq_idx = 1:nrow(.)) %>%
+  dplyr::filter(i %in% as.numeric(str_extract(names(agg_list), "[0-9]+"))) %>%
+  ggplot() +
+  geom_histogram(aes(x=seq_idx), binwidth=1) +
+  labs(title=paste0(" | Indices of the Retained Pseudocells | ", 
+                    length(unique(df_filter_2$i)), " -> ", length(agg_list)), 
+       x="Indices", y="") -> p
+print(p)
+ggsave(paste0(save_path_img, "/04_",  "retained_agg.png"), 
+       height=8, width=20)
+
+# check to what extend we retain the cell type heterogeneity
+rbind(
+  purrr::imap_dfr(agg_list, ~ tibble::as_tibble(.x) %>% dplyr::mutate(agg = .y)) %>%
+    dplyr::select(agg, cell_type) %>%
+    dplyr::distinct() %>%
+    dplyr::count(cell_type) %>%
+    dplyr::mutate(frac = n / sum(n)) %>%
+    dplyr::mutate(orig = "pseudo_cells"),
+  all_barcodes %>%
+    dplyr::count(cell_type) %>%
+    dplyr::mutate(frac = n / sum(n)) %>%
+    dplyr::mutate(orig="single_cells")
+) %>%
+  ggplot() +
+  geom_bar(aes(y=cell_type, x=frac, fill=orig), stat="identity", position="dodge", alpha=0.4, color="black",
+           width=0.6) +
+  labs(x="Fraction", y="Group", fill="Based on", title="Fraction of cells/pseudocells from each group")
+ggsave(paste0(save_path_img, "/03B_", "frac_sc_pseudo_after_overlap.png"), 
+       height=8, width=20)
+
+# save the pseudocells in long format
+pseudocells <- purrr::imap_dfr(agg_list, function(agg, name) {
+  barcodes <- agg$barcodes
+  stopifnot((sum(str_detect(barcodes, "-1_[0-9+]")) + sum(str_detect(barcodes, "^ce3"))) == length(barcodes))
+  rows_needed <- max(sum(str_detect(barcodes, "-1_[0-9+]")), sum(str_detect(barcodes, "^ce3")))
+  # use majority for the pseudocells identity
+  c_type <- table(agg$cell_type); c_type <- names(c_type)[which.max(c_type)]
+  tibble(name = name,
+         cell_type = c_type,
+         # padding the barcode vectors with NA to enabling saving as tibble
+         RNA_barcodes = c(barcodes[str_detect(barcodes, "^ce3")], 
+                          rep(NA_character_, rows_needed - sum(str_detect(barcodes, "^ce3")))),
+         ATAC_barcodes = c(barcodes[str_detect(barcodes, "-1_[0-9+]")], 
+                           rep(NA_character_, rows_needed - sum(str_detect(barcodes, "-1_[0-9+]"))))
+  )
+})
+readr::write_tsv(x=pseudocells, file=paste0(save_path, "/ce3_pseudocells_080825", ".tsv"))
+
+# color umap based on whether a cell is considered
+in_n_agg <- purrr::map_dbl(rownames(umap_coord), ~ 
+                             sum(.x==c(pseudocells$RNA_barcodes, pseudocells$ATAC_barcodes)[
+                               !is.na(c(pseudocells$RNA_barcodes, pseudocells$ATAC_barcodes))]))
+
+p1 <- ggplot() +
+  geom_point(aes(x=umap_coord[, 1], y=umap_coord[, 2], 
+                 color=rownames(umap_coord) %in% union(pseudocells$RNA_barcodes, pseudocells$ATAC_barcodes)),
+             size=0.1, alpha=0.5) +
+  labs(color="", x="UMAP 1", y="UMAP 2", title=" | Cell is part of at least 1 agg") +
+  guides(colour = guide_legend(override.aes = list(size=1.5, alpha=1)))
+p2 <- ggplot() +
+  geom_point(aes(x=umap_coord[, 1], y=umap_coord[, 2], 
+  ), 
+  size=0.1, alpha=0.5) +
+  labs(color="Cell Type", x="UMAP 1", y="UMAP 2") +
+  guides(colour = guide_legend(override.aes = list(size=1.5, alpha=1)))
+p <- cowplot::plot_grid(p1, p2, rel_widths = c(1, 1.4))
+print(p)
+ggsave(paste0(save_path_img, "/05A_", "umap_cons_cells.png"), 
+       height=8, width=20)
+
+p1 <- ggplot() +
+  geom_point(aes(x=umap_coord[, 1], y=umap_coord[, 2], 
+                 color=in_n_agg),
+             size=0.1, alpha=0.5) +
+  labs(color="N", x="UMAP 1", y="UMAP 2", title=paste0(" | Cell is part of at N agg")) +
+  guides(colour = guide_legend(override.aes = list(size=1.5, alpha=1))) +
+  scale_color_viridis_c()
+p2 <- ggplot() +
+  geom_point(aes(x=umap_coord[, 1], y=umap_coord[, 2]), 
+             size=0.1, alpha=0.5) +
+  labs(color="Cell Type", x="UMAP 1", y="UMAP 2") +
+  guides(colour = guide_legend(override.aes = list(size=1.5, alpha=1))) 
+p <- cowplot::plot_grid(p1, p2, rel_widths = c(1, 1.4))
+print(p)
+ggsave(paste0(save_path_img, "/05A_", "umap_n_cons_cells.png"), 
+       height=8, width=20)
+
+#plotly::ggplotly(p2)
+
+
+all_pseudocells <- pseudocells
+#purrr::map_dfr(list.files(save_path, full.names=T), function(file) {
+#    stage_info = basename(str_remove(file, "\\.tsv"))
+#    readr::read_delim(file, show_col_types = F)
+#  })
+
+check_composition <- function(pseudocell_df) {
+  p <- pseudocell_df %>%
+    dplyr::group_by(name) %>%
+    dplyr::summarise(rna_cells = sum(!is.na(RNA_barcodes)),
+                     atac_cells = sum(!is.na(ATAC_barcodes)),
+                     cell_type = dplyr::first(cell_type)) %>%
+    tidyr::pivot_longer(cols=c(rna_cells, atac_cells),
+                        names_to="modality", values_to="values") %>%
+    ggplot() +
+    geom_histogram(aes(x=values), binwidth=1) +
+    facet_wrap(~ cell_type + modality, scales = "free_y", ncol=8) +
+    labs(x="Number of Constituent Cells", y="Count", title="Pseudocell Compositon for ") 
+  print(p)
+  ggsave(paste0(save_path_img, "/06_", "_size_dist_pseudocells.png"), 
+         height=6, width=10)
+}
+check_composition(all_pseudocells)
+#purrr::walk(stages, ~ check_composition(all_pseudocells, .x))
+
+p1 <- all_barcodes %>%
+  dplyr::filter(modality=="RNA") %>%
+  dplyr::left_join(y=dplyr::count(all_pseudocells, RNA_barcodes), 
+                   by=c("cell"="RNA_barcodes")) %>%
+  mutate(n = ifelse(is.na(n), 0, n)) %>%
+  ggplot() +
+  geom_histogram(aes(x=n), binwidth=1) +
+  labs(x="Number of aggregates a RNA cell is part of", y="Count",
+       title="RNA Cells")
+
+p2 <- all_barcodes %>%
+  dplyr::filter(modality=="ATAC") %>%
+  dplyr::left_join(y=dplyr::count(all_pseudocells, ATAC_barcodes), 
+                   by=c("cell"="ATAC_barcodes")) %>%
+  mutate(n = ifelse(is.na(n), 0, n)) %>%
+  ggplot() +
+  geom_histogram(aes(x=n), binwidth=1) +
+  labs(x="Number of aggregates a ATAC cell is part of", y="Count",
+       title="ATAC Cells")
+
+cowplot::plot_grid(p1, p2)
+ggsave(paste0(save_path_img, "/07_", "num_agg_cell_is_part_of.png"), 
+       height=6, width=12)
+
+p1 <- all_barcodes %>%
+  dplyr::filter(modality=="RNA") %>%
+  dplyr::left_join(y=dplyr::count(all_pseudocells, RNA_barcodes), 
+                   by=c("cell"="RNA_barcodes")) %>%
+  mutate(n = ifelse(is.na(n), 0, n)) %>%
+  mutate(at_least_1 = n > 0) %>%
+  #dplyr::count(cell_type, at_least_1) %>%
+  #dplyr::group_by(cell_type) %>%
+  dplyr::mutate(frac = n / sum(n)) %>%
+  ggplot() +
+  geom_bar(aes(x=at_least_1, y=frac), stat="identity", fill="blue", alpha=0.4) +
+  labs(y="Fraction", x="Cell is part of at least 1 pseudocell",
+       title="RNA") +
+  #facet_wrap(~ cell_type) +
+  lims(y=c(0,1))
+
+p2 <- all_barcodes %>%
+  dplyr::filter(modality=="ATAC") %>%
+  dplyr::left_join(y=dplyr::count(all_pseudocells, ATAC_barcodes), 
+                   by=c("cell"="ATAC_barcodes")) %>%
+  mutate(n = ifelse(is.na(n), 0, n)) %>%
+  mutate(at_least_1 = n > 0) %>%
+  #dplyr::count(cell_type, at_least_1) %>%
+  #dplyr::group_by(cell_type) %>%
+  dplyr::mutate(frac = n / sum(n)) %>%
+  ggplot() +
+  geom_bar(aes(x=at_least_1, y=frac), stat="identity", fill="blue", alpha=0.4) +
+  labs(y="Fraction", x="Cell is part of at least 1 pseudocell",
+       title="ATAC") +
+  #facet_wrap(~ cell_type) +
+  lims(y=c(0,1))
+
+cowplot::plot_grid(p1, p2)
+ggsave(paste0(save_path_img, "/08_", "frac_considered_cells_overview.png"), 
+       height=6, width=12)
+
+plot_df <- 
+  all_barcodes %>% 
+  dplyr::left_join(all_pseudocells %>%
+                     pivot_longer(cols=ends_with("barcodes"), names_to="Modality", values_to="barcode") %>%
+                     dplyr::mutate(Modality=str_remove(Modality, "_barcodes")) %>%
+                     dplyr::group_by(barcode) %>%
+                     dplyr::summarise(N = n()),
+                   by=c("cell" = "barcode")) %>%
+  dplyr::mutate(N = ifelse(is.na(N), 0, N)) %>%
+  dplyr::mutate(at_least_1 = (N > 0))
+plot_df
+
+
+check_composition_2 <- function(df, mod) {
+  
+  tmp_df <- df %>%
+    dplyr::filter(modality=={{mod}}) %>%
+    dplyr::count(cell_type, at_least_1) %>%
+    tidyr::complete(cell_type, at_least_1) %>%
+    dplyr::mutate(n = ifelse(is.na(n), 0, n)) %>%
+    dplyr::group_by(cell_type) %>%
+    dplyr::mutate(frac = n / sum(n), total_n = sum(n)) %>%
+    dplyr::filter(at_least_1) %>%
+    dplyr::select(-at_least_1)
+  
+  p1 <- tmp_df %>%
+    ggplot() +
+    geom_bar(aes(y=reorder(cell_type, frac, function(x) first(x)), x=frac), 
+             stat="identity", width=0.5) +
+    labs(x = "Fraction of Cells in at least 1 Agg", y = "Cell Type",
+         title = paste0("Modality: ", mod)) +
+    lims(x=c(0,1))
+  
+  p2 <- tmp_df %>%
+    ggplot() +
+    geom_bar(aes(y=reorder(cell_type, frac, function(x) first(x)), x=total_n), 
+             stat="identity", width=0.5) +
+    labs(x = "Total Number of Cells", y = "", title="")
+  
+  p <- cowplot::plot_grid(p1, p2, rel_widths = c(1.2, 1), ncol=2)
+  print(p)
+  ggsave(paste0(save_path_img, "/09_", "_", mod, "_frac_considered_cells.png"), 
+         height=8, width=12)
+}
+
+
+
+purrr::walk(c("RNA", "ATAC"), function(modality) {
+  check_composition_2(plot_df, modality)
+})
+
+return(all_pseudocells)
+}
+```
+
+# --- Run Function
+
+```{r}
+all_pseudocells<-pseudocells(rna_sp1, atac_sp1, coembed_sp1)
+```
+
+
+# --- Visualize Aggregates
+
+```{r}
+for (i in 1:5) {
+      # Sample a random pseudocell group name
+         agg <- sample(unique(all_pseudocells$name), 1)
+       
+           # Extract the corresponding barcodes
+           cells <- c(
+             all_pseudocells[all_pseudocells$name == agg, "RNA_barcodes"]$RNA_barcodes,
+             all_pseudocells[all_pseudocells$name == agg, "ATAC_barcodes"]$ATAC_barcodes
+             )
+         
+            # Retrieve the corresponding cell type
+            cell_type <- all_pseudocells[all_pseudocells$name == agg, "cell_type"]$cell_type
+            
+               # Generate and print the plot
+               print(
+                     DimPlot(coembed_sp1, cells.highlight = cells) + 
+                           ggtitle(cell_type)
+               )
+}
+
+all_pseudocells$name %>% unique() %>% length()
+```

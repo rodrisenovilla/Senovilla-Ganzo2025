@@ -1,0 +1,160 @@
+---
+title: "scRNAseq_rawData_exploration"
+author: "phylobrain"
+date: "2026-02-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("conf.R")
+```
+
+# ---- User-configurable base path (set once per Rmd, or source from a shared config) ----
+
+```{r}
+base_dir <- "/home/phylobrain/bioinfo/sc_phylobrain"   # <- change this once
+obj_dir  <- file.path(base_dir, "pb_objects")
+fig_dir  <- file.path(base_dir, "fig1")
+if (!dir.exists(fig_dir)) dir.create(fig_dir, recursive = TRUE)
+```
+
+
+# ---- Upload objects ----
+
+```{r}
+sp1 <- readRDS(file.path(obj_dir, "sp1.rds"))
+```
+
+# Visualize Cell types
+
+```{r, fig.width=7, fig.height=5}
+pdf("fig1/sp1_celtypes_dimplot.pdf", width = 7, height = 5)
+Idents(sp1)<-"cell_types"
+levels(sp1)<-sp1_ct
+DimPlot(sp1, label = T)+scale_color_manual(values = colors_sp1)+theme_classic()+NoLegend()
+dev.off()
+```
+
+# ---- Quality Control ----
+
+```{r}
+raw_sp1[["percent.mt"]] <- PercentageFeatureSet(raw_sp1, pattern = "^mt-")
+```
+
+```{r, fig.width=7, fig.height=5}
+pdf("fig1/sp1_origident_dimplot.pdf", width = 7, height = 5)
+Idents(sp1)<-"orig.ident"
+levels(sp1)<-c("X10X23","X10X25")
+DimPlot(sp1, label = F)+scale_color_manual(values = c("navyblue","steelblue1"))+theme_classic()+NoLegend()
+DimPlot(sp1, label = F)+scale_color_manual(values = c("navyblue","steelblue1"))+theme_classic()
+DimPlot(subset(sp1, idents= "X10X23"))+NoLegend()+scale_color_manual(values = c("navyblue"))
+DimPlot(subset(sp1, idents= "X10X25"))+NoLegend()+scale_color_manual(values = c("steelblue1"))
+dev.off()
+```
+
+```{r, fig.width=7, fig.height=5}
+pdf("fig1/sp1_phase_dimplot.pdf", width = 7, height = 5)
+Idents(sp1)<-"Phase"
+levels(sp1)<-c("G1","S","G2M")
+DimPlot(sp1, label = F)+theme_classic()+NoLegend()+scale_color_manual(values = c("indianred2","forestgreen","steelblue2"))
+DimPlot(sp1, label = F)+theme_classic()+scale_color_manual(values = c("indianred2","forestgreen","steelblue2"))
+DimPlot(subset(sp1, idents= "G1"))+NoLegend()+scale_color_manual(values = c("indianred2"))
+DimPlot(subset(sp1, idents= "S"))+NoLegend()+scale_color_manual(values = c("forestgreen"))
+DimPlot(subset(sp1, idents= "G2M"))+NoLegend()+scale_color_manual(values = c("steelblue2"))
+dev.off()
+```
+
+
+```{r}
+pdf("fig1/sp1_qc_vlnplot.pdf", width = 10, height = 4 )
+Idents(sp1)<-"cell_types"
+levels(sp1)<-sp1_ct
+VlnPlot(sp1, features = "nFeature_RNA", pt.size = 0)+scale_fill_manual(values = colors_sp1)+theme_classic()+NoLegend()+RotatedAxis()
+VlnPlot(sp1, features = "percent.mt", pt.size = 0)+scale_fill_manual(values = colors_sp1)+theme_classic()+NoLegend()+RotatedAxis()
+dev.off()
+```
+
+# ---- Dot Plots ----
+
+
+```{r}
+markers <- c("RSPO1", #RP
+             "FOXG1", #TEL
+             "EMX2", #aTEL
+             "SIX3", #HT
+             "RAX", #OV
+             "WNT7B", #HEM/P3
+             "TCF7L2", #P1-2
+             "OTX2", #FB+MB
+             "IRX3",#MB
+             "ZIC2",#Alar
+             "EN2",#Isthmo
+             "HOXA2",#ANT HB
+             "HOXB1",#POST HB
+             "NKX2-2",#BASAL HB
+             "PAX7", #ALARBASAL HB
+             "MSX1", #ALAR HB
+             "SHH", #FP
+             "FOXA1", #FP
+             "GADD45G", #NB
+             "GAP43") #NEU
+markers<-stringr::str_to_title(markers)
+```
+
+```{r, fig.height=10, fig.width=8}
+Idents(sp1)<-"cell_types"
+levels(sp1)<-sp1_ct
+DotPlot(sp1, features = markers, cols = c("lightgrey","steelblue4"))+RotatedAxis()
+```
+
+```{r, fig.width=7, fig.height=5}
+DefaultAssay(sp1)<-"SCT"
+FeaturePlot(sp1, features = "Rspo1")+scale_color_gradient2(low = "grey85", mid = "grey85", high = "steelblue4")
+```
+
+```{r, fig.width=7, fig.height=5}
+pdf("fig1/sp1_featureplot.pdf", width = 7, height = 5)
+for(i in 1:length(markers)){
+  DefaultAssay(sp1)<-"SCT"
+  print(FeaturePlot(sp1, features = markers[i])+scale_color_gradient2(low = "grey85", mid = "grey85", high = "steelblue4"))
+}
+dev.off()
+```
+
+# ---- Marker genes ----
+
+
+```{r}
+Idents(sp1)<-"cell_types"
+DefaultAssay(sp1)<-"integrated"
+levels(sp1)<-rev(sp1_ct)
+sp1.markers <- FindAllMarkers(sp1, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.75)
+sp1.top2 <- sp1.markers %>% group_by(cluster) %>% top_n(n = 1, wt = avg_log2FC)
+```
+
+```{r, fig.height=8, fig.width=10.5}
+DotPlot(sp1, features = rev(unique(sp1.top2$gene)), cols = c("lightgrey","steelblue4"))+RotatedAxis()
+pdf("fig1/sp1_top1_dotplot.pdf", width = 11, height = 8 )
+DotPlot(sp1, features = rev(unique(sp1.top2$gene)), cols = c("lightgrey","steelblue4"))+RotatedAxis()
+dev.off()
+```
+
+# ---- Annotation ----
+
+```{r}
+Idents(sp1)<-"SCT_snn_res.2"
+DimPlot(sp1, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+sp1 <- RenameIdents(sp1, '16'="Inf",'18'="POA",'2'="PAL",'4'="P3",'6'="P2-1",'15'="Malo1",'27'="Malo2",'1'="Malo3",'17'="Non-Neural",'14'="aMB",'3'="abMB",'0'="bMB/HB",'13'="abHB","7"="pHB","12"="aHB/IT","11"="pMB/IT","19"="FP","8"="Malo8", "10"="MB","5"="IM N", "23"="NOCI N","22"="Ht Neu","9"="MAT N","26"="COL N","21"="TAL N","25"="EGL","24"="?","20"="Pal N")
+sp1[["cell_types"]]<-Idents(sp1)
+Idents(sp1)<-"cell_types"
+levels(sp1)<-sp1_ct
+DimPlot(sp1, label = T)+scale_color_manual(values = colors_sp1)+theme_classic()+NoLegend()
+```
+
+
+# ---- Save ----
+
+```{r}
+saveRDS(sp1, file.path(obj_dir, "sp1.rds"))
+```

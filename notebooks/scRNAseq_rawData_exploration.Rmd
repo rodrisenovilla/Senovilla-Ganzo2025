@@ -1,0 +1,102 @@
+---
+title: "scRNAseq_rawData_exploration"
+author: "phylobrain"
+date: "2026-02-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("conf.R")
+```
+
+# ---- User-configurable base path (set once per Rmd, or source from a shared config) ----
+
+```{r}
+base_dir <- "/home/phylobrain/bioinfo/sc_phylobrain"   # <- change this once
+obj_dir  <- file.path(base_dir, "pb_objects")
+fig_dir  <- file.path(base_dir, "fig1")
+if (!dir.exists(fig_dir)) dir.create(fig_dir, recursive = TRUE)
+```
+
+
+# ---- Upload objects ----
+
+```{r}
+raw_sp1 <- readRDS(file.path(obj_dir, "raw_sp1.rds"))
+```
+
+
+# ---- Quality Control ----
+
+```{r}
+raw_sp1[["percent.mt"]] <- PercentageFeatureSet(raw_sp1, pattern = "^mt-")
+```
+
+```{r}
+pdf(file.path(fig_dir, "rawsp1_origident_dimplot.pdf"), width = 7, height = 5)
+DimPlot(raw_sp1, group.by = "orig.ident", label = FALSE) +
+  NoLegend() +
+  scale_color_manual(values = c("navyblue","steelblue1")) +
+  theme_classic()
+DimPlot(raw_sp1, group.by = "orig.ident", label = FALSE) +
+  NoLegend() +
+  scale_color_manual(values = c("navyblue","steelblue1")) +
+  theme_classic() +
+  NoLegend()
+dev.off()
+```
+
+```{r}
+pdf(file.path(fig_dir, "rawsp1_qc_vlnplot.pdf"), width = 10, height = 4)
+VlnPlot(raw_sp1, features = "nFeature_RNA", group.by = "orig.ident", pt.size = 0) +
+  scale_fill_manual(values = c("navyblue","steelblue1"))
+VlnPlot(raw_sp1, features = "percent.mt", group.by = "orig.ident", pt.size = 0) +
+  scale_fill_manual(values = c("navyblue","steelblue1"))
+dev.off()
+```
+
+```{r}
+pdf(file.path(fig_dir, "rawsp1_selection_dimplot.pdf"), width = 7, height = 5)
+Idents(raw_sp1) <- "Selection"
+levels(raw_sp1) <- c("Unselected", sp1_ct)  # <- assumes you define sp1_ct elsewhere
+DimPlot(raw_sp1, label = TRUE) +
+  NoLegend() +
+  scale_color_manual(values = c("steelblue", colors_sp1))  # <- assumes colors_sp1 exists
+DimPlot(raw_sp1, label = FALSE) +
+  NoLegend() +
+  scale_color_manual(values = c("steelblue", colors_sp1))
+dev.off()
+```
+
+```{r}
+pdf(file.path(fig_dir, "rawsp1_general_dimplot.pdf"), width = 7, height = 5)
+plot1 <- DimPlot(raw_sp1, group.by = "general_celltypes", label = FALSE) + NoLegend()
+DimPlot(raw_sp1, group.by = "general_celltypes", label = TRUE) + NoLegend()
+LabelClusters(plot1, id = "general_celltypes", size = 5, repel = TRUE, box.padding = 1)
+dev.off()
+```
+
+# ---- Annotation ----
+
+```{r}
+Idents(raw_sp1) <- "RNA_snn_res.0.1"
+raw_sp1 <- RenameIdents(
+  raw_sp1,
+  "0"="Hindbrain", "4"="Midbrain", "8"="Neurons", "1"="Forebrain",
+  "2"="Epidermal", "5"="Neural Crest", "11"="Vascular", "7"="Mesenchyme",
+  "6"="Placodes", "10"="Erythrocytes", "3"="Mesenchyme", "12"="Immune",
+  "9"="OlfatoryEpithelia"
+)
+raw_sp1[["general_celltypes"]] <- Idents(raw_sp1)
+
+plot1 <- DimPlot(raw_sp1, reduction = "umap", pt.size = 0.5, label = FALSE, group.by = "general_celltypes") + NoLegend()
+LabelClusters(plot1, id = "general_celltypes", size = 5, repel = TRUE, box.padding = 1)
+DimPlot(raw_sp1, reduction = "umap", pt.size = 0.5, label = TRUE, group.by = "general_celltypes") + NoLegend()
+```
+
+# ---- Save ----
+
+```{r}
+saveRDS(raw_sp1, file.path(obj_dir, "raw_sp1.rds"))
+```

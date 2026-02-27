@@ -1,0 +1,176 @@
+---
+title: "scRNAseq_EvoComparisons"
+author: "phylobrain"
+date: "2026-02-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("conf.R")
+```
+
+# ---  Label Transfer
+
+```{r}
+labtransfer_plot(sp1, sp2)
+```
+
+# ---  SAMap
+
+```{r}
+samap_plot(sp1, sp2)
+```
+
+# ---  Ortholog Filtering
+
+```{r}
+#sp2 vs sp1
+sp2<-orthologue_filtering("sp2","sp1")
+sp1<-orthologue_filtering("sp1","sp2", main = F)
+```
+
+# ---  GSI Correlation
+
+```{r}
+sp2_g<-gsicorr_g(sp2)
+sp1_g<-gsicorr_g(sp1)
+gsicorr_plot(sp2_g, sp1_g)
+```
+
+# ---  Multi method integration - Bassi Plot
+
+```{r}
+bassi_plot(sp1, sp2)
+```
+
+# ---  Datasets Integration
+
+```{r}
+pb<-integration(species = list("sp2","sp1","gecko"), reference = "sp1", method = "rpca", fs = 2000)
+```
+
+
+```{r}
+folder = "rpca_3species_2000fs/"
+path_folder<-paste("/home/phylobrain/bioinfo/sc_phylobrain/integration/integration", folder, sep = "_")
+dir.create(path_folder, showWarnings = FALSE)
+
+#integrated <- pb
+
+species<-unique(integrated$species)
+orden<-unlist(names(animal)) %>% stringr::str_to_title()
+species<-species[order(match(species,orden))]
+Idents(integrated)<-"species"
+levels(integrated)<-species
+col_species<-unlist(animal)[tolower(species)]
+dimplot_species<-DimPlot(integrated, label = F) +scale_color_manual(values = unname(col_species))+ggtitle("Integrated")
+
+print(dimplot_species)
+n<-tolower(species)
+for(i in 1:length(n)){
+  Idents(integrated)<-"species"
+  indiv<-subset(integrated, idents= species[i])
+  Idents(indiv)<-"species"
+  print(DimPlot(indiv, label = T)+NoLegend()+scale_color_manual(values = unname(col_species)[i])+ggtitle(names(col_species)[i]))
+}
+
+pdf(paste(path_folder, "integration_dimplot_byspecies.pdf"), width = 7, height = 5)
+print(dimplot_species)
+print(dimplot_species+NoLegend())
+for(i in 1:length(n)){
+  Idents(integrated)<-"species"
+  indiv<-subset(integrated, idents= species[i])
+  Idents(indiv)<-"species"
+  print(DimPlot(indiv, label = T)+NoLegend()+scale_color_manual(values = unname(col_species)[i])+ggtitle(names(col_species)[i]))
+}
+dev.off()
+
+for(i in 1:length(n)){
+  Idents(integrated)<-"species"
+  indiv<-subset(integrated, idents= species[i])
+  Idents(indiv)<-"cell_types"
+  levels(indiv)<- order[[n[[i]]]]
+  print(DimPlot(indiv, label = T)+NoLegend() +scale_color_manual(values = unname(color[[n[[i]]]]))+ggtitle(species[i]))
+}
+
+#Save the plots as pdf
+pdf(paste(path_folder, "integration_dimplot_bycelltypes.pdf", sep = ""), width = 7, height = 5)
+for(i in 1:length(n)){
+  Idents(integrated)<-"species"
+  indiv<-subset(integrated, idents= species[i])
+  Idents(indiv)<-"cell_types"
+  levels(indiv)<- order[[n[[i]]]]
+  print(DimPlot(indiv, label = T, repel=T)+NoLegend() +scale_color_manual(values = unname(color[[n[[i]]]])))
+}
+dev.off()
+
+for(i in 1:length(n)){
+  Idents(integrated)<-"species"
+  indiv<-subset(integrated, idents= species[i])
+  Idents(indiv)<-"Stage"
+  print(DimPlot(indiv, label = T)+NoLegend())
+}
+
+#saveRDS(integrated, paste(path_folder, "integrated_object.rds", sep = ""))
+```
+
+
+#ReNaming New Clusters
+
+```{r}
+integrated <- FindNeighbors(integrated, dims = 1:50)
+integrated <- FindClusters(integrated, resolution = c(2.5,2,3))
+
+DimPlot(integrated, reduction = "umap", group.by = "integrated_snn_res.2.5", label = TRUE, pt.size = 0.5) + NoLegend()
+DimPlot(integrated, reduction = "umap", group.by = "integrated_snn_res.2", label = TRUE, pt.size = 0.5) + NoLegend()
+DimPlot(integrated, reduction = "umap", group.by = "integrated_snn_res.3", label = TRUE, pt.size = 0.5) + NoLegend()
+
+res<-"integrated_snn_res.2"
+clusters<-unlist(integrated[[res]]) %>% unique() %>% as.list()
+names(clusters)<-unlist(clusters)
+clusters<-lapply(clusters, function(type){
+table<-integrated@meta.data %>% dplyr::filter(integrated_snn_res.2 == type) %>% dplyr::select(cell_types) %>% unlist() %>% as.character() %>% table() %>% sort(decreasing = T)
+type<-paste(names(table)[1], collapse = ":")
+return(type)
+})
+
+Idents(integrated)<-"integrated_snn_res.2"
+DimPlot(integrated, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+integrated <- RenameIdents(integrated, clusters)
+integrated[["res_int"]]<-Idents(integrated)
+integrated@meta.data$res_integ<-as.character(integrated@meta.data$res_int)
+p1<-DimPlot(integrated, reduction = "umap", group.by = "res_integ", label = TRUE) + NoLegend()
+p1
+res_ct<-unique(integrated$res_int)
+```
+
+
+```{r , echo=FALSE}
+Idents(integrated)<-"integrated_snn_res.2.5"
+DimPlot(integrated, reduction = "umap", group.by = "integrated_snn_res.2.5", label = TRUE) + NoLegend()
+
+library(dplyr)
+
+
+#df<-integrated@meta.data[,c("integrated_snn_res.2.5","cell_types_int")] %>% distinct(cell_types_int, .keep_all=T) 
+#named_vector <- setNames(df$integrated_snn_res.2.5, df$cell_types_int)
+
+#Order Names
+order_names<-c("AMP" ,"HEM" ,"Die-Mes-RP" , "Rho-RP" , "dPal","vPal","SPal", "OV1", "OV2" ,"THT-ATO-POA",
+"PHT", "P3","aP1-2" ,"bP2", "bP1" ,"Unknown" ,"aMes1", "aMes2", "aMes3","aMes4",
+"aMes5", "bMes" , "aIt", "pIt", "RL" , "aR1-2", "aR3-8", "lR1-8", "bR1-2" ,"bR3-4","bR5-8" ,"Die-Mes-FP" , "It-FP" ,"Rho-FP","DLL1-N" , "DLL2-N","DLX-N" ,"TAL1-N", "LHX-N" ,"TBX20-N","OLF-N", "GAP43-N")
+#Oder clusters
+order_numbers<-c(24,32,11,22,14,1,33,25,40,3,35,16,12,27,5,38,10,13,9,26,28,19,20,8,2,17,4,0,31,7,37,29,18,15,6,23,36,41,34,30,39,21)
+named_vector<- setNames(order_names, order_numbers)
+integrated <- RenameIdents(integrated, named_vector)
+integrated[["cell_types_int"]]<-Idents(integrated)
+
+colors<-c("#eeefa8","#dddf00","#f6eb1e","#eac435","#03045e","#90e0ef","#48cae4","#1982c4","#1a749e","#3d8eff","#ade8f4","#023e8a","#0077b6", "blue4","#8fe1ef","#1982c4","#656d4a","#2b9348","#55a630","#007f5f","#55a630","#124004","#e85d04","#d68706","#ead5dc",
+"#dc2f02","#df8080","#e35053","#ef233c","#da627d","#942b3b","#c08552","#895737","#5e3023","#6c757c","#737373","#BDBDBD","#bbd0ff","grey75","grey40","#8c895f","#252525")
+Idents(integrated)<-"cell_types_int"
+levels(integrated)<-order_names
+p1<-DimPlot(integrated, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()+scale_color_manual(values = colors)
+p1
+colors
+```

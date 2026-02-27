@@ -1,0 +1,149 @@
+---
+title: "snATACseq_exploration"
+author: "phylobrain"
+date: "2026-02-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("conf.R")
+```
+
+
+# ---- User-configurable base path (set once per Rmd, or source from a shared config) ----
+
+```{r}
+base_dir <- "/home/phylobrain/bioinfo/sc_phylobrain"   # <- change this once
+obj_dir  <- file.path(base_dir, "pb_objects")
+fig_dir  <- file.path(base_dir, "fig1")
+if (!dir.exists(fig_dir)) dir.create(fig_dir, recursive = TRUE)
+```
+
+
+# ---- Upload objects ----
+
+```{r}
+sp1_rna <- readRDS(file.path(obj_dir, "sp1_rna.rds"))
+sp1_atac <- readRDS(file.path(obj_dir, "sp1_atac.rds"))
+```
+
+# ---- Visualize Cell types ----
+
+```{r, fig.width=7, fig.height=5}
+pdf("fig1/sp1_celtypes_dimplot.pdf", width = 7, height = 5)
+Idents(sp1_atac)<-"cell_types"
+levels(sp1_atac)<-sp1_ct
+DimPlot(sp1_atac, label = T)+scale_color_manual(values = colors_sp1)+theme_classic()+NoLegend()
+dev.off()
+```
+
+# ---- Quality Control
+
+
+```{r}
+VlnPlot(
+  object = sp1_atac,
+  features = c('nCount_ATAC', 'TSS.enrichment', 'nucleosome_signal'),
+  pt.size = 0,
+  ncol = 5, cols = c("firebrick4","indianred1"))
+pdf("QC_ce3_rawatac.pdf", width = 10, height = 4)
+print(VlnPlot(
+  object = sp1_atac,
+  features = c('nCount_ATAC', 'TSS.enrichment', 'nucleosome_signal'),
+  pt.size = 0,
+  ncol = 5, cols = c("firebrick4","indianred1")))
+dev.off()
+```
+
+```{r, fig.width=7, fig.height=5}
+pdf("rawsp1_atac_origident_dimplot.pdf", width = 7, height = 5)
+DimPlot(sp1_atac, group.by = "orig.ident", label = F)+NoLegend()+scale_color_manual(values = c("firebrick4","indianred1"))+theme_classic()
+DimPlot(sp1_atac, group.by = "orig.ident", label = F)+NoLegend()+scale_color_manual(values = c("firebrick4","indianred1"))+theme_classic()+NoLegend()
+dev.off()
+```
+
+# ---- Transfer of Labels
+
+```{r}
+DefaultAssay(sp1_atac)<-"SCT"
+DefaultAssay(ce3_raw)<-"integrated"
+transfer.anchors <- FindTransferAnchors(
+  reference = ce3_raw,
+  query = sp1_atac,
+  reduction = 'cca',
+  dims = 1:30,
+  normalization.method = "SCT"
+)
+predicted.labels <- TransferData(
+  anchorset = transfer.anchors,
+  refdata = ce3_raw$cell_types,
+  weight.reduction = sp1_atac[['lsi']],
+  dims = 2:30
+)
+
+sp1_atac <- AddMetaData(object = sp1_atac, metadata = predicted.labels)
+```
+
+```{r, fig.width=7, fig.height=5}
+pdf("rawce3_selection_dimplot.pdf", width = 7, height = 5)
+Idents(sp1_atac)<-"predicted.id"
+#levels(sp1_atac)<-c("Unselected",ce3_ct)
+FeaturePlot(sp1_atac, reduction = "umap", features = "prediction.score.max", cols = c("grey75","firebrick3"))
+levels(sp1_atac)<-ce3_ct
+DimPlot(sp1_atac, label = T, reduction = "umap")+NoLegend()+scale_color_manual(values = c(colors_ce3))
+#DimPlot(sp1_atac, label = F)+NoLegend()+scale_color_manual(values = c("firebrick3",colors_ce3))
+dev.off()
+```
+
+
+# ---- Co-Embedding
+
+```{r}
+sp1_atac$cell_types<-sp1_atac$predicted.id
+transfer.anchors <- FindTransferAnchors(reference = sp1_rna, query = sp1_atac, features = sp1_rna@assays$integrated@var.features,
+    reference.assay = "integrated", query.assay = "RNA", reduction = "cca", normalization.method = "SCT")
+# note that we restrict the imputation to variable genes from scRNA-seq, but could impute the
+# full transcriptome if we wanted to
+genes.use <- sp1_rna@assays$integrated@var.features
+refdata <- GetAssayData(sp1_rna, assay = "integrated", slot = "data")[genes.use, ]
+# refdata (input) contains a scRNA-seq expression matrix for the scRNA-seq cells.  imputation
+# (output) will contain an imputed scRNA-seq matrix for each of the ATAC cells
+imputation <- TransferData(anchorset = transfer.anchors, refdata = refdata, weight.reduction = sp1_atac[["lsi"]],
+    dims = 2:50)
+sp1_atac[["integrated"]] <- imputation
+sp1_atac<-SCTransform(sp1_atac)
+coembed <- merge(x = sp1_rna, y = sp1_atac)
+
+# Finally, we run PCA and UMAP on this combined object, to visualize the co-embedding of both
+# datasets
+coembed <- ScaleData(coembed, features = genes.use, do.scale = FALSE)
+coembed <- RunPCA(coembed, features = genes.use, verbose = FALSE)
+coembed <- RunUMAP(coembed, dims = 1:30)
+DimPlot(coembed, group.by = c("orig.ident"), reduction="umap",label = T)
+```
+
+# ---- Proccessing
+
+```{r}
+DefaultAssay(sp1_atac)<-"ATAC"
+sp1_atac <- RunTFIDF(sp1_atac)
+sp1_atac <- FindTopFeatures(sp1_atac, min.cutoff = 'q0')
+sp1_atac <- RunSVD(object = sp1_atac)
+
+DepthCor(sp1_atac)
+
+sp1_atac <- RunUMAP(
+  object = sp1_atac,
+  reduction = 'lsi',
+  dims = 2:50
+)
+```
+
+```{r}
+DefaultAssay(sp1_atac)<-"ATAC"
+# compute gene activities
+gene.activities <- GeneActivity(sp1_atac)
+# add the gene activity matrix to the Seurat object as a new assay
+sp1_atac[['RNA']] <- CreateAssayObject(counts = gene.activities)
+```
