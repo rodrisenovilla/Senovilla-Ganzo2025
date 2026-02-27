@@ -13,7 +13,8 @@ Notebooks are attached to reproduce manuscript analysis:
 2. scRNAseq_neural_exploration
 3. scRNAseq_EvoComparisons
 4. snATACseq_exploration
-5. SCENIC+_proccessing
-6. EvoParameters_calculation
+5. pseudocells_multiome_SCENIC+
+6. SCENIC+_proccessing
+7. EvoParameters_calculation
 
 Data is stored in EGA (waiting for ID confirmation).
