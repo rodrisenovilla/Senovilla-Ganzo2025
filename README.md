@@ -16,7 +16,7 @@ Apart from R Markdowns and Jupyter Notebooks for reproducing the analysis, you c
 - Single cell atlases can be explored in a Shiny app: https://phylobrain.serve.scilifelab.se/app/phylobrain
 - Spatial transcriptomic atlas can be explored in TissUUmaps: https://phylochicken.serve.scilifelab.se/#
 - Bash for Paroedura picta annotation in GeMoMa.sh
-- Functions employed for analyisis are stored in conf.R
+- Functions and variables employed for analyisis are stored in conf.R
 
 
 
