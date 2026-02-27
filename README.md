@@ -17,4 +17,4 @@ Notebooks are attached to reproduce manuscript analysis:
 6. SCENIC+_proccessing
 7. EvoParameters_calculation
 
-Data is stored in EGA (waiting for ID confirmation).
+Data is stored in ArrayExpress (waiting for ID confirmation).
