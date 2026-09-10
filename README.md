@@ -16,6 +16,7 @@ Apart from R Markdowns and Jupyter Notebooks for reproducing the analysis, you c
 - Single cell atlases can be explored in a Shiny app: https://phylobrain.serve.scilifelab.se/app/phylobrain
 - Spatial transcriptomic atlas can be explored in TissUUmaps: https://phylochicken.serve.scilifelab.se/#
 - Bash for Paroedura picta annotation in GeMoMa.sh
+- phastCons BigWig generation filtered by nonEutherians from mouse 60way and nonBirds from chick 77way using PHAST package.
 - Functions and variables employed for analyisis are stored in conf.R
 
 
